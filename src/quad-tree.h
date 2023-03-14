@@ -4,6 +4,7 @@
 #include "common.h"
 #include <memory>
 
+const int QuadTreeLeafSize = 8;
 // NOTE: Do not remove or edit funcations and variables in this class definition
 class QuadTreeNode {
 public:
@@ -69,7 +70,43 @@ private:
                     Vec2 bmax) {
     // TODO: paste your sequential implementation in Assignment 3 here.
     // (or you may also rewrite a new version)
-    return nullptr;
+    std::unique_ptr<QuadTreeNode> quadTree = std::make_unique<QuadTreeNode>();
+    
+    if(particles.size() <= QuadTreeLeafSize){
+      quadTree->isLeaf = 1;
+      if(particles.size() != 0){
+        quadTree->particles = particles; 
+      }
+      return quadTree;
+    } 
+    quadTree->isLeaf = 0;
+    Vec2 pivot = Vec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f);
+    std::vector<Particle> topLeft;
+    std::vector<Particle> topRight;
+    std::vector<Particle> bottomLeft;
+    std::vector<Particle> bottomRight;
+
+    for (size_t i = 0; i < particles.size(); i++){
+      Particle p = particles.at(i);
+      Vec2 position = p.position;
+
+      if(position.x < pivot.x && position.y < pivot.y){
+        topLeft.push_back(p);
+      } else if(position.x < pivot.x && position.y >= pivot.y){
+        bottomLeft.push_back(p);
+      } else if(position.x >= pivot.x && position.y < pivot.y){
+        topRight.push_back(p);
+      } else{
+        bottomRight.push_back(p);
+      }
+    }
+    //printf("here6\n");
+    quadTree->children[0] = buildQuadTreeImpl(topLeft, bmin, pivot);
+    quadTree->children[1] = buildQuadTreeImpl(topRight, Vec2(pivot.x, bmin.y), Vec2(bmax.x, pivot.y));
+    quadTree->children[2] = buildQuadTreeImpl(bottomLeft, Vec2(bmin.x, pivot.y), Vec2(pivot.x, bmax.y));
+    quadTree->children[3] = buildQuadTreeImpl(bottomRight, pivot, bmax);
+
+    return quadTree;
   }
 
   static void getParticlesImpl(std::vector<Particle> &particles,
