@@ -40,8 +40,8 @@ int main(int argc, char *argv[]) {
   // Get total number of processes specificed at start of run
   MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-  tag1 = 1; //MASTER sends to Others
-  tag2 = 2; //Others sends to MASTER
+  int tag1 = 1; //MASTER sends to Others
+  int tag2 = 2; //Others sends to MASTER
 
   StartupOptions options = parseOptions(argc, argv);
 
@@ -58,26 +58,26 @@ int main(int argc, char *argv[]) {
   Timer totalSimulationTimer;
   for (int i = 0; i < options.numIterations; i++) {
     //check if it's master thread
-    //if MASTER: SEND particles to others + simulate step + RECV from others
-    //if not MASTER: RECV from MASTER newest particles + simulate step + SEND to MASTER
+    //if MASTER: SEND particles to others + simulate step (self portion) + RECV from others
+    //if not MASTER: RECV from MASTER newest particles + simulate step (self portion) + SEND to MASTER
     MPI_Barrier(MPI_COMM_WORLD);
     if (pid == MASTER){
-      for (i = 1; i<nproc; i++){
-        MPI_Send(&particles, particles.size(), MPI_PACKED, i, tag1, MPI_COMM_WORLD); //update new particles to others
+      for (int t = 1; t<nproc; t++){
+        MPI_Send(&particles, particles.size(), MPI_PACKED, t, tag1, MPI_COMM_WORLD); //update new particles to others
       }
       QuadTree tree;
       QuadTree::buildQuadTree(particles, tree);
       simulateStep(tree, particles, newParticles, stepParams);
 
-      for (i = 1; i<nproc; i++){
-        MPI_Recv(&newParticles, newParticles.size(), MPI_PACKED, i, tag2, MPI_COMM_WORLD); //update new particles to others
+      for (int k = 1; k<nproc; i++){
+        MPI_Recv(&newParticles, newParticles.size(), MPI_PACKED, k, tag2, MPI_COMM_WORLD, &status); //update new particles to others
       }
     }else{
       MPI_Recv(&particles, particles.size(), MPI_PACKED, MASTER, tag1, MPI_COMM_WORLD, &status);
       QuadTree tree;
       QuadTree::buildQuadTree(particles, tree);
       simulateStep(tree, particles, newParticles, stepParams);
-      MPI_Send(&newParticles, newParticles.size(), MPI_PACKED, i, tag1, MPI_COMM_WORLD);
+      MPI_Send(&newParticles, newParticles.size(), MPI_PACKED, pid, tag2, MPI_COMM_WORLD);
     }
     particles.swap(newParticles);
     MPI_Barrier(MPI_COMM_WORLD);
