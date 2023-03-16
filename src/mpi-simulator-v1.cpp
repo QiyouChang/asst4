@@ -42,6 +42,7 @@ int main(int argc, char *argv[]) {
   std::vector<Particle> particles, newParticles;
   if (pid == 0) {
     loadFromFile(options.inputFile, particles);
+    loadFromFile(options.inputFile, newParticles);
   }
 
   StepParameters stepParams = getBenchmarkStepParams(options.spaceSize);
