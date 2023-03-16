@@ -3,6 +3,8 @@
 #include "quad-tree.h"
 #include "timing.h"
 
+#define  MASTER		0
+
 void simulateStep(const QuadTree &quadTree,
                   const std::vector<Particle> &particles,
                   std::vector<Particle> &newParticles, StepParameters params) {
@@ -29,6 +31,7 @@ void simulateStep(const QuadTree &quadTree,
 int main(int argc, char *argv[]) {
   int pid;
   int nproc;
+  MPI_Status status;
 
   // Initialize MPI
   MPI_Init(&argc, &argv);
@@ -36,6 +39,9 @@ int main(int argc, char *argv[]) {
   MPI_Comm_rank(MPI_COMM_WORLD, &pid);
   // Get total number of processes specificed at start of run
   MPI_Comm_size(MPI_COMM_WORLD, &nproc);
+
+  tag1 = 1; //MASTER sends to Others
+  tag2 = 2; //Others sends to MASTER
 
   StartupOptions options = parseOptions(argc, argv);
 
@@ -51,29 +57,27 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
   Timer totalSimulationTimer;
   for (int i = 0; i < options.numIterations; i++) {
-    // The following code is just a demonstration.
-    QuadTree tree;
-    QuadTree::buildQuadTree(particles, tree);
-    MPI_Comm com;
-    MPI_Status stat;
-    int particleIndex;
-    simulateStep(tree, particles, newParticles, stepParams);
-    printf ("Hello from task %d!\n", pid);
-    for(int j = 0; j < nproc; j++){
-      if(j != pid){
-        MPI_Send(&newParticles, particles.size(), MPI_PACKED, j, pid, MPI_COMM_WORLD);
-      }
-    }
+    //check if it's master thread
+    //if MASTER: SEND particles to others + simulate step + RECV from others
+    //if not MASTER: RECV from MASTER newest particles + simulate step + SEND to MASTER
     MPI_Barrier(MPI_COMM_WORLD);
-    for(int p = 0; p < nproc; p ++){
-      std::vector<Particle> inMsg;
-      if(p != pid){
-        MPI_Recv(&inMsg, particles.size(), MPI_PACKED, p, pid, MPI_COMM_WORLD, &stat);
-        for(int num = 0; num < inMsg.size()/nproc; num ++){
-          particleIndex = num * nproc + p;
-          newParticles[particleIndex] = inMsg[particleIndex];
-        }
+    if (pid == MASTER){
+      for (i = 1; i<nproc; i++){
+        MPI_Send(&particles, particles.size(), MPI_PACKED, i, tag1, MPI_COMM_WORLD); //update new particles to others
       }
+      QuadTree tree;
+      QuadTree::buildQuadTree(particles, tree);
+      simulateStep(tree, particles, newParticles, stepParams);
+
+      for (i = 1; i<nproc; i++){
+        MPI_Recv(&newParticles, newParticles.size(), MPI_PACKED, i, tag2, MPI_COMM_WORLD); //update new particles to others
+      }
+    }else{
+      MPI_Recv(&particles, particles.size(), MPI_PACKED, MASTER, tag1, MPI_COMM_WORLD, &status);
+      QuadTree tree;
+      QuadTree::buildQuadTree(particles, tree);
+      simulateStep(tree, particles, newParticles, stepParams);
+      MPI_Send(&newParticles, newParticles.size(), MPI_PACKED, i, tag1, MPI_COMM_WORLD);
     }
     particles.swap(newParticles);
     MPI_Barrier(MPI_COMM_WORLD);
