@@ -3,7 +3,7 @@
 #include "quad-tree.h"
 #include "timing.h"
 
-#define  MASTER		0
+#define MASTER 0
 
 void simulateStep(const QuadTree &quadTree,
                   const std::vector<Particle> &particles,
@@ -46,6 +46,7 @@ int main(int argc, char *argv[]) {
   int pid;
   int nproc;
   MPI_Status status;
+  MPI_Comm comm;
 
   // Initialize MPI
   MPI_Init(&argc, &argv);
@@ -56,6 +57,12 @@ int main(int argc, char *argv[]) {
 
   int tag1 = 1; //MASTER sends to Others
   int tag2 = 2; //Others sends to MASTER
+  int *displs;
+  int *recvcounts;
+
+  displs = (int *)malloc(nproc*sizeof(int));
+  recvcounts = (int *)malloc(nproc*sizeof(int));
+
 
   StartupOptions options = parseOptions(argc, argv);
 
@@ -69,39 +76,52 @@ int main(int argc, char *argv[]) {
   int chunksize = size/nproc;
   StepParameters stepParams = getBenchmarkStepParams(options.spaceSize);
 
+  int sum = 0;
+  for (int i = 0; i < nproc; i++){
+    recvcounts[i] = (i < nproc-1) ? (chunksize) : ((int)newParticles.size()-(nproc-1)*chunksize);
+    recvcounts[i] *= sizeof(Particle);
+    displs[i] = sum;
+    sum += recvcounts[i];
+  }
+
   // Don't change the timeing for totalSimulationTime.
   MPI_Barrier(MPI_COMM_WORLD);
   Timer totalSimulationTimer;
   for (int i = 0; i < options.numIterations; i++) {
     //check if it's master thread
-    //if MASTER: SEND particles to others + simulate step (self portion) + RECV from others
-    //if not MASTER: RECV from MASTER newest particles + simulate step (self portion) + SEND to MASTER
-    MPI_Barrier(MPI_COMM_WORLD);
+    //if MASTER: Broadcast + simulate step (self portion) + Gather to MASTER
+    //if not MASTER: RECV from MASTER newest particles + simulate step (self portion) + Gather to MASTER
+    //MPI_Barrier(MPI_COMM_WORLD);
     if (pid == MASTER){
-      for (int t = 1; t<nproc; t++){
-        MPI_Send(&particles, particles.size(), MPI_PACKED, t, tag1, MPI_COMM_WORLD); //update new particles to others
-      }
+    //   for (int t = 1; t<nproc; t++){
+    //     MPI_Send(&particles, particles.size(), MPI_PACKED, t, tag1, MPI_COMM_WORLD); //update new particles to others
+    //   }
+      MPI_Bcast(&particles, sizeof(Particle)*particles.size(), MPI_BYTE, MASTER, comm);
       QuadTree tree;
       QuadTree::buildQuadTree(particles, tree);
       simulateStep(tree, particles, newParticles, stepParams, pid, nproc, chunksize);
-      particles.swap(newParticles);
 
-      for (int k = 1; k<nproc; i++){
-        MPI_Recv(&newParticles, newParticles.size(), MPI_PACKED, k, tag2, MPI_COMM_WORLD, &status); //update new particles to others
-        int limit = (k < nproc-1) ? ((k+1)*chunksize) : (int)newParticles.size();
-        for (int n = k*chunksize; n<limit ; n++){
-          particles[n] = newParticles[n];
-        }
-      }
+
+      // for (int k = 1; k<nproc; i++){
+      //   MPI_Recv(&newParticles, newParticles.size(), MPI_PACKED, k, tag2, MPI_COMM_WORLD, &status); //update new particles to others
+      //   int limit = (k < nproc-1) ? ((k+1)*chunksize) : (int)newParticles.size();
+      //   for (int n = k*chunksize; n<limit ; n++){
+      //     particles[n] = newParticles[n];
+      //   }
+      // }
+
+      MPI_Gatherv(&newParticles, chunksize*sizeof(Particle), MPI_BYTE, &particles, recvcounts, displs, MPI_BYTE, MASTER, comm);
     }else{
-      MPI_Recv(&particles, particles.size(), MPI_PACKED, MASTER, tag1, MPI_COMM_WORLD, &status);
+      //MPI_Recv(&particles, particles.size(), MPI_PACKED, MASTER, tag1, MPI_COMM_WORLD, &status);
+      printf("pid:%d\n", pid);
+      int size = (pid < nproc-1) ? (chunksize) : ((int)newParticles.size()-(nproc-1)*chunksize);
       QuadTree tree;
       QuadTree::buildQuadTree(particles, tree);
       simulateStep(tree, particles, newParticles, stepParams, pid, nproc, chunksize);
-      MPI_Send(&newParticles, newParticles.size(), MPI_PACKED, pid, tag2, MPI_COMM_WORLD);
+      //MPI_Send(&newParticles, newParticles.size(), MPI_PACKED, pid, tag2, MPI_COMM_WORLD);
+
+      MPI_Gatherv(&newParticles, size*sizeof(Particle), MPI_BYTE, &particles, recvcounts, displs, MPI_BYTE, MASTER, comm);
     }
-    
-    MPI_Barrier(MPI_COMM_WORLD);
   }
   MPI_Barrier(MPI_COMM_WORLD);
   double totalSimulationTime = totalSimulationTimer.elapsed();
