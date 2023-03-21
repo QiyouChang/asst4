@@ -40,6 +40,7 @@ int main(int argc, char *argv[]) {
 
   int *displs;
   int *recvcounts;
+  int Psize = sizeof(Particle);
 
   displs = (int *)malloc(nproc*sizeof(int));
   recvcounts = (int *)malloc(nproc*sizeof(int));
@@ -50,7 +51,7 @@ int main(int argc, char *argv[]) {
   std::vector<Particle> particles, newParticles;
   if (pid == 0) {
     loadFromFile(options.inputFile, particles);
-    loadFromFile(options.inputFile, newParticles); //********
+    //loadFromFile(options.inputFile, newParticles); //********
     size = (int)particles.size();
   }
 
@@ -62,7 +63,7 @@ int main(int argc, char *argv[]) {
   int sum = 0;
   for (int i = 0; i < nproc; i++){
     recvcounts[i] = (i < nproc-1) ? (chunksize) : (size-(nproc-1)*chunksize);
-    recvcounts[i] *= sizeof(Particle);
+    recvcounts[i] *= Psize;
     displs[i] = sum;
     sum += recvcounts[i];
   }
@@ -72,21 +73,14 @@ int main(int argc, char *argv[]) {
   newParticles.resize(chunksize); //********
   Timer totalSimulationTimer;
 
-  MPI_Barrier(MPI_COMM_WORLD);
-  MPI_Bcast(particles.data(), sizeof(Particle) * size, MPI_BYTE, MASTER, MPI_COMM_WORLD);
-  MPI_Bcast(newParticles.data(), sizeof(Particle) * chunksize, MPI_BYTE, MASTER, MPI_COMM_WORLD);
-
-  
-  int childsize = (pid < nproc-1) ? (chunksize) : (size-(nproc-1)*chunksize);
-  
-
+  MPI_Bcast(particles.data(), Psize * size, MPI_BYTE, MASTER, MPI_COMM_WORLD);
+  //MPI_Bcast(newParticles.data(), Psize * chunksize, MPI_BYTE, MASTER, MPI_COMM_WORLD);
   
   for (int i = 0; i < options.numIterations; i++) {
     QuadTree tree;
     QuadTree::buildQuadTree(particles, tree);
     simulateStep(tree, particles, newParticles, stepParams, pid, nproc, chunksize);
-    MPI_Barrier(MPI_COMM_WORLD);
-    MPI_Allgatherv(newParticles.data(), childsize*sizeof(Particle), MPI_BYTE, particles.data(), 
+    MPI_Allgatherv(newParticles.data(), chunksize*Psize, MPI_BYTE, particles.data(), 
         recvcounts, displs, MPI_BYTE, comm);
   }
 
