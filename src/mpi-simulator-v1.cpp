@@ -8,38 +8,20 @@
 
 void simulateStep(const QuadTree &quadTree,
                   const std::vector<Particle> &particles,
-                  std::vector<Particle> &newParticles, StepParameters params, int pid, int nproc, int chunksize) {
-  if (pid<nproc-1){
-    //normal cases
-    for (int i = pid*chunksize; i < ((pid+1)*chunksize); i++) {
-      auto pi = newParticles[i];
-      Vec2 force = Vec2(0.0f, 0.0f);
-      std::vector<Particle> temp; 
-      quadTree.getParticles(temp, pi.position, params.cullRadius); 
-      // accumulate attractive forces to apply to particle i
-      for (size_t j = 0; j < temp.size(); j++) {
-        if ((pi.position - temp[j].position).length() < params.cullRadius)
-          force += computeForce(pi, temp[j], params.cullRadius);
-      }
-      // update particle state using the computed force
-      newParticles[i] = updateParticle(pi, force, params.deltaTime);
+                  std::vector<Particle> &newParticles, StepParameters params) {
+
+  for (int i = 0; i < newParticles.size(); i++) {
+    auto pi = newParticles[i];
+    Vec2 force = Vec2(0.0f, 0.0f);
+    std::vector<Particle> temp; 
+    quadTree.getParticles(temp, pi.position, params.cullRadius); 
+    // accumulate attractive forces to apply to particle i
+    for (size_t j = 0; j < temp.size(); j++) {
+      if ((pi.position - temp[j].position).length() < params.cullRadius)
+        force += computeForce(pi, temp[j], params.cullRadius);
     }
-  }else{
-    //Upper limit to the total size
-    //int leftover = (int)newParticles.size() - pid*chunksize;
-    for (int i = pid*chunksize; i < (int)newParticles.size(); i++) {
-      auto pi = newParticles[i];
-      Vec2 force = Vec2(0.0f, 0.0f);
-      std::vector<Particle> temp; 
-      quadTree.getParticles(temp, pi.position, params.cullRadius); 
-      // accumulate attractive forces to apply to particle i
-      for (size_t j = 0; j < temp.size(); j++) {
-        if ((pi.position - temp[j].position).length() < params.cullRadius)
-          force += computeForce(pi, temp[j], params.cullRadius);
-      }
-      // update particle state using the computed force
-      newParticles[i] = updateParticle(pi, force, params.deltaTime);
-    }
+    // update particle state using the computed force
+    newParticles[i] = updateParticle(pi, force, params.deltaTime);
   }
 }
 
@@ -64,15 +46,13 @@ int main(int argc, char *argv[]) {
   displs = (int *)malloc(nproc*sizeof(int));
   recvcounts = (int *)malloc(nproc*sizeof(int));
 
-
   StartupOptions options = parseOptions(argc, argv);
-
   
   int size = 0;
   std::vector<Particle> particles, newParticles;
   if (pid == 0) {
     loadFromFile(options.inputFile, particles);
-    loadFromFile(options.inputFile, newParticles);
+    //loadFromFile(options.inputFile, newParticles);
     size = (int)particles.size();
   }
 
@@ -91,15 +71,20 @@ int main(int argc, char *argv[]) {
     recvcounts[i] *= sizeof(Particle);
     displs[i] = sum;
     sum += recvcounts[i];
+    std::cerr<< "recvcounts: " << recvcounts[i] << "i is: "<< i  << "\n";
+    std::cerr<< "displs: " << displs[i] << "i is: "<< i  << "\n";
   }
 
-  
-  
+  int childsize = (pid < nproc-1) ? (chunksize) : (size-(nproc-1)*chunksize);
   // Don't change the timeing for totalSimulationTime.
   MPI_Barrier(MPI_COMM_WORLD);
   particles.resize(size);
-  newParticles.resize(size);
+  newParticles.resize(childsize);
   Timer totalSimulationTimer;
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  MPI_Bcast(particles.data(), sizeof(Particle) * size, MPI_BYTE, MASTER, MPI_COMM_WORLD);
+  MPI_Barrier(MPI_COMM_WORLD);
 
   for (int i = 0; i < options.numIterations; i++) {
     // std::cerr<<"num iters:" << options.numIterations << "\n";
@@ -109,25 +94,22 @@ int main(int argc, char *argv[]) {
     // std::cerr<<"size of Particle:" << sizeof(Particle)<< "\n";
     // std::cerr<<"number of particles: " << size << "\n";
     MPI_Barrier(MPI_COMM_WORLD);
-    MPI_Bcast(particles.data(), sizeof(Particle) * size, MPI_BYTE, MASTER, comm);
-    //MPI_Barrier(MPI_COMM_WORLD);
-    std::cerr<<"master post_bcast:" << pid << "\n";
-      int childsize = (pid < nproc-1) ? (chunksize) : (size-(nproc-1)*chunksize);
-      QuadTree tree;
-      QuadTree::buildQuadTree(particles, tree);
-      std::cerr<<"child place1:" << pid << "\n";
-      simulateStep(tree, particles, newParticles, stepParams, pid, nproc, chunksize);
-      std::cerr<<"child place2:" << pid << "\n";
-      MPI_Gatherv(newParticles.data(), childsize*sizeof(Particle), MPI_BYTE, particles.data(), recvcounts, displs, MPI_BYTE, MASTER, comm);
-      std::cerr<<"child place3:" << pid << "\n";
-    // }
+    std::cerr<<"master post_bcast:" << pid << "size of particle" << sizeof(Particle) * size << "\n";
+    QuadTree tree;
+    QuadTree::buildQuadTree(particles, tree);
+    
+    std::cerr<<"child place1:" << pid << "\n";
+    simulateStep(tree, particles, newParticles, stepParams);
+    std::cerr<<"child place2:" << pid << "\n";
+    MPI_Allgatherv(newParticles.data(), childsize*sizeof(Particle), MPI_BYTE, particles.data(), 
+        recvcounts, displs, MPI_BYTE, comm);
     std::cerr<<"finish iter :" << i << "\n";
-    MPI_Barrier(MPI_COMM_WORLD);
+    std::cerr<<"size of newPaticles:" << sizeof(*newParticles.data())<< "\n";
+    //MPI_Barrier(MPI_COMM_WORLD);
   }
  
   MPI_Barrier(MPI_COMM_WORLD);
   
-
   double totalSimulationTime = totalSimulationTimer.elapsed();
 
   std::cerr<<"done!!!!" << pid << "\n";
