@@ -2,6 +2,7 @@
 #include "mpi.h"
 #include "quad-tree.h"
 #include "timing.h"
+#include <iostream>
 
 #define MASTER 0
 
@@ -25,7 +26,7 @@ void simulateStep(const QuadTree &quadTree,
     }
   }else{
     //Upper limit to the total size
-    int leftover = (int)newParticles.size() - pid*chunksize;
+    //int leftover = (int)newParticles.size() - pid*chunksize;
     for (int i = pid*chunksize; i < (int)newParticles.size(); i++) {
       auto pi = newParticles[i];
       Vec2 force = Vec2(0.0f, 0.0f);
@@ -46,7 +47,7 @@ int main(int argc, char *argv[]) {
   int pid;
   int nproc;
   MPI_Status status;
-  MPI_Comm comm;
+  MPI_Comm comm = MPI_COMM_WORLD;
 
   // Initialize MPI
   MPI_Init(&argc, &argv);
@@ -55,8 +56,8 @@ int main(int argc, char *argv[]) {
   // Get total number of processes specificed at start of run
   MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-  int tag1 = 1; //MASTER sends to Others
-  int tag2 = 2; //Others sends to MASTER
+  // int tag1 = 1; //MASTER sends to Others
+  // int tag2 = 2; //Others sends to MASTER
   int *displs;
   int *recvcounts;
 
@@ -66,70 +67,74 @@ int main(int argc, char *argv[]) {
 
   StartupOptions options = parseOptions(argc, argv);
 
+  
+  int size = 0;
   std::vector<Particle> particles, newParticles;
   if (pid == 0) {
     loadFromFile(options.inputFile, particles);
     loadFromFile(options.inputFile, newParticles);
+    size = (int)particles.size();
   }
 
-  int size = (int)newParticles.size();
-  int chunksize = size/nproc;
   StepParameters stepParams = getBenchmarkStepParams(options.spaceSize);
+  //MPI_Barrier(MPI_COMM_WORLD);
+  //std::cerr<<"before broadcast size:" << pid << "\n";
+  MPI_Bcast(&size, 1, MPI_INT, 0, comm);
+  //std::cerr<<"mid broadcast size:" << pid << "\n";
+  //MPI_Barrier(MPI_COMM_WORLD);
+  //std::cerr<<"after broadcast size:" << pid << "\n";
 
+  int chunksize = size/nproc;
   int sum = 0;
   for (int i = 0; i < nproc; i++){
-    recvcounts[i] = (i < nproc-1) ? (chunksize) : ((int)newParticles.size()-(nproc-1)*chunksize);
+    recvcounts[i] = (i < nproc-1) ? (chunksize) : (size-(nproc-1)*chunksize);
     recvcounts[i] *= sizeof(Particle);
     displs[i] = sum;
     sum += recvcounts[i];
   }
 
+  
+  
   // Don't change the timeing for totalSimulationTime.
   MPI_Barrier(MPI_COMM_WORLD);
+  particles.resize(size);
+  newParticles.resize(size);
   Timer totalSimulationTimer;
+
   for (int i = 0; i < options.numIterations; i++) {
-    //check if it's master thread
-    //if MASTER: Broadcast + simulate step (self portion) + Gather to MASTER
-    //if not MASTER: RECV from MASTER newest particles + simulate step (self portion) + Gather to MASTER
+    // std::cerr<<"num iters:" << options.numIterations << "\n";
+    // std::cerr<<"pid:" << pid << "\n";
+    // std::cerr<<"master prev_bcast:" << pid << "\n";
+    // std::cerr<<"size of newPaticles:" << sizeof(newParticles)<< "\n";
+    // std::cerr<<"size of Particle:" << sizeof(Particle)<< "\n";
+    // std::cerr<<"number of particles: " << size << "\n";
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Bcast(particles.data(), sizeof(Particle) * size, MPI_BYTE, MASTER, comm);
     //MPI_Barrier(MPI_COMM_WORLD);
-    if (pid == MASTER){
-    //   for (int t = 1; t<nproc; t++){
-    //     MPI_Send(&particles, particles.size(), MPI_PACKED, t, tag1, MPI_COMM_WORLD); //update new particles to others
-    //   }
-      MPI_Bcast(&particles, sizeof(Particle)*particles.size(), MPI_BYTE, MASTER, comm);
+    std::cerr<<"master post_bcast:" << pid << "\n";
+      int childsize = (pid < nproc-1) ? (chunksize) : (size-(nproc-1)*chunksize);
       QuadTree tree;
       QuadTree::buildQuadTree(particles, tree);
+      std::cerr<<"child place1:" << pid << "\n";
       simulateStep(tree, particles, newParticles, stepParams, pid, nproc, chunksize);
-
-
-      // for (int k = 1; k<nproc; i++){
-      //   MPI_Recv(&newParticles, newParticles.size(), MPI_PACKED, k, tag2, MPI_COMM_WORLD, &status); //update new particles to others
-      //   int limit = (k < nproc-1) ? ((k+1)*chunksize) : (int)newParticles.size();
-      //   for (int n = k*chunksize; n<limit ; n++){
-      //     particles[n] = newParticles[n];
-      //   }
-      // }
-
-      MPI_Gatherv(&newParticles, chunksize*sizeof(Particle), MPI_BYTE, &particles, recvcounts, displs, MPI_BYTE, MASTER, comm);
-    }else{
-      //MPI_Recv(&particles, particles.size(), MPI_PACKED, MASTER, tag1, MPI_COMM_WORLD, &status);
-      printf("pid:%d\n", pid);
-      int size = (pid < nproc-1) ? (chunksize) : ((int)newParticles.size()-(nproc-1)*chunksize);
-      QuadTree tree;
-      QuadTree::buildQuadTree(particles, tree);
-      simulateStep(tree, particles, newParticles, stepParams, pid, nproc, chunksize);
-      //MPI_Send(&newParticles, newParticles.size(), MPI_PACKED, pid, tag2, MPI_COMM_WORLD);
-
-      MPI_Gatherv(&newParticles, size*sizeof(Particle), MPI_BYTE, &particles, recvcounts, displs, MPI_BYTE, MASTER, comm);
-    }
+      std::cerr<<"child place2:" << pid << "\n";
+      MPI_Gatherv(newParticles.data(), childsize*sizeof(Particle), MPI_BYTE, particles.data(), recvcounts, displs, MPI_BYTE, MASTER, comm);
+      std::cerr<<"child place3:" << pid << "\n";
+    // }
+    std::cerr<<"finish iter :" << i << "\n";
+    MPI_Barrier(MPI_COMM_WORLD);
   }
+ 
   MPI_Barrier(MPI_COMM_WORLD);
+  
+
   double totalSimulationTime = totalSimulationTimer.elapsed();
 
+  std::cerr<<"done!!!!" << pid << "\n";
   if (pid == 0) {
     printf("total simulation time: %.6fs\n", totalSimulationTime);
     saveToFile(options.outputFile, particles);
   }
-
+  
   MPI_Finalize();
 }
