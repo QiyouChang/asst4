@@ -2,6 +2,7 @@
 #include "mpi.h"
 #include "quad-tree.h"
 #include "timing.h"
+#include <math.h>
 
 void simulateStep(const QuadTree &quadTree,
                   std::vector<Particle> &newParticles, StepParameters params, int pid, int nproc, int chunksize) {
@@ -61,7 +62,12 @@ void assignGrid(std::vector<Particle> &totalParticles, Vec2 pmin, Vec2 pmax, std
   }
 }
 
-void findRelatedParticles()
+
+//this function aims to find possibly overlapping region : L represents min; R represents max
+bool findRelatedParticles(Vec2 target_L, Vec2 target_R, Vec2 comp_L, Vec2 comp_R){
+  //4 cases left, right, top, bottom; otherwise, overlapping
+  return (!((target_L.x > comp_R.x) || (target_R.x < comp_L.x) || (target_L.y > comp_R.y) || (target_R.y < comp_L.y)));
+}
 
 
 int main(int argc, char *argv[]) {
@@ -75,52 +81,74 @@ int main(int argc, char *argv[]) {
   // Get total number of processes specificed at start of run
   MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-  StartupOptions options = parseOptions(argc, argv);
+  int gridSize = sqrt(nproc);
 
-  std::vector<Particle> totalParticles, relativeParticles, newParticles;
+  StartupOptions options = parseOptions(argc, argv);
+  int Psize = sizeof(Particle);
+
+  std::vector<Particle> totalParticles, relativeParticles, newParticles, myParticles;
   if (pid == 0) { //load all particles to master 
     loadFromFile(options.inputFile, totalParticles);
+    size = (int)particles.size();
   }
 
   StepParameters stepParams = getBenchmarkStepParams(options.spaceSize);
 
-  
-
-  relativeParticles.resize(gridPsize);
-  newParticles.resize(gridPsize);
-
-  MPI_Barrier(MPI_COMM_WORLD);
-  MPI_Scatterv(totalParticles.data(),(int)totalParticles.size()* sizeof(Particle), displs, MPI_BYTE,
-       relativeParticles.data(), recvcounts, MPI_BYTE, 0, MPI_COMM_WORLD);
-  MPI_Barrier(MPI_COMM_WORLD);
-
+  //send size
+  MPI_Bcast(&size, 1, MPI_INT, 0, comm);
+  particles.resize(size);
+  //send particles to all processes
+  MPI_Bcast(particles.data(), Psize * size, MPI_BYTE, MASTER, MPI_COMM_WORLD);
+  //find boundary and assign particles to different grid
+  Vec2 pmin(1e30f, 1e30f);
+  Vec2 pmax(-1e30f, -1e30f);
+  findBoundary(&particles, pmin, pmax);
+  assignGrid(&particles, pmin, pmax, &myParticles, pid, gridSize);
+  int gridPsize = myParticles.size();
+  myParticles.resize(gridPsize); //??issue with resize
   
   // Don't change the timeing for totalSimulationTime.
   
   Timer totalSimulationTimer;
 
   for (int i = 0; i < options.numIterations; i++) {
+    //check reassigning
     if(i % RESIZEFACTOR == 0){
       relativeParticles.resize(gridPsize);
       newParticles.resize(gridPsize);
-
+      //Gathering first and thenn redo the process before the loop
       MPI_Barrier(MPI_COMM_WORLD);
       MPI_Scatterv(totalParticles.data(),(int)totalParticles.size()* sizeof(Particle), displs, MPI_BYTE,
           relativeParticles.data(), recvcounts, MPI_BYTE, 0, MPI_COMM_WORLD);
       MPI_Barrier(MPI_COMM_WORLD);
     }
-   
 
+
+
+    //check overlapping
+    for (int index; index < nproc; index++){
+      //??how to obtain the boundary of other processes instead of using communications 
+      if ((index != pid)&&(findRelatedParticles())){
+        send its own particles 
+        recv the others particle
+      }
+    }
+    combine related particles together //??how
+
+    //simulate step
+    QuadTree tree;
+    QuadTree::buildQuadTree(related_particles, tree);
+    simulateStep(tree, particles, newParticles, stepParams);
+
+    
+    //update boundary with current particles after simulating step
     for (auto &p : relativeParticles) {
       pmin.x = fminf(pmin.x, p.position.x);
       pmin.y = fminf(pmin.y, p.position.y);
       pmax.x = fmaxf(pmax.x, p.position.x);
       pmax.y = fmaxf(pmax.y, p.position.y);
     }
-    // The following code is just a demonstration.
-    QuadTree tree;
-    QuadTree::buildQuadTree(particles, tree);
-    simulateStep(tree, particles, newParticles, stepParams);
+   
     particles.swap(newParticles);
   }
 
