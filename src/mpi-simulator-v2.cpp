@@ -116,7 +116,7 @@ bool forceCheck(Vec2 l1, Vec2 r1, Vec2 l2, Vec2 r2, float radius){
 }
 
 void constructRelatedP(std::vector<Particle> &myParticles, std::vector<Particle> &relativeParticles, 
-        std::vector<float> &allLimits, Vec2 target_L, Vec2 target_R, int nproc, float radius){
+        std::vector<float> &allLimits, Vec2 target_L, Vec2 target_R, int nproc, float radius, int pid, int *recvCounts){
   
   for(int i = 0; i < myParticles.size(); i++){
     relativeParticles[i] = myParticles[i];
@@ -124,32 +124,30 @@ void constructRelatedP(std::vector<Particle> &myParticles, std::vector<Particle>
 
   Vec2 comp_L, comp_R;
   std::vector<bool> overlap;
-  std::vector<bool> procsize; //store the size of each process
   overlap.resize(nproc);
-  int count_proc = 0;
-  int sendSize = 0; //size sent every time
+  int offset = 0;
+
   for(int j = 0; j < nproc; j ++){
     comp_L.x = allLimits[j * 4];
     comp_L.y = allLimits[j * 4 + 1];
     comp_R.x = allLimits[j * 4 + 2];
     comp_R.y = allLimits[j * 4 + 3];
     if (forceCheck(target_L, target_R, comp_L, comp_R, radius)){
-      MPI_Isend(&sendSize, 1, MPI_INT, j, 1, MPI_COMM_WORLD, &request);
-      MPI_Isend(&myParticles, sendSize * sizeof(Particle), MPI_BYTE, pid, 1, MPI_COMM_WORLD, &request);
+      int sendSize = recvCounts[j];
+      MPI_Isend(&(myParticles+offset), sendSize * sizeof(Particle), MPI_BYTE, pid, 1, MPI_COMM_WORLD, &request);
+      offset += sendSize;
       overlap[j] = true; 
-      count_proc += 1;
     } else{
       overlap[j] = false;
     }
   }
-  procsize.resize(count_proc);
-  int proc_index = 0;
+
+  int offset2 = 0;
   for(int k = 0; k < nproc; k++){
     if(overlap[k]){
-      MPI_Recv(&sendSize, 1, MPI_INT, k, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-      procsize[proc_index] = !proc_index ? procsize[proc_index-1] + sendSize : 0; //accumulate the offset
-      MPI_Recv(&(myParticles+procsize[proc_index]), sendSize * sizeof(Particle), MPI_BYTE, k, 1, MPI_COMM_WORLD, MPI_STATUS_ IGNORE); //store the particles to myparticles with the offset
-      proc_index += 1;
+        int sendSize = recvCounts[j];
+        MPI_Irecv(&(myParticles+offset2), sendSize * sizeof(Particle), MPI_BYTE, k, 1, MPI_COMM_WORLD, MPI_STATUS_ IGNORE); //store the particles to myparticles with the offset
+        offset2 += sendSize;
     }
   } 
 }
@@ -191,12 +189,11 @@ int main(int argc, char *argv[]) {
   assignAll(totalParticles,  myParticles, pmin, pmax, nproc, pid, gridSize);
   newParticles.resize(myParticles.size());
   recvCounts[pid] = myParticles.size() * sizeof(Particle);
+  MPI_Bcast (&(recvCounts+4*pid),1,MPI_INT,pid,MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  int sum = 0;
   for(int p = 0; p < nproc; p++){
-    displs[p] = recvCounts[p] + sum;
-    sum += recvCounts[p];
+    displs[p] = !p ? recvCounts[p] : recvCounts[p] + displs[p-1];
     particlerecvCounts[p] = 4 * sizeof(float);
     particledispls[p] = 4 * sizeof(float) * p;
   }
@@ -205,23 +202,40 @@ int main(int argc, char *argv[]) {
 
   for (int i = 0; i < options.numIterations; i++) {
     if(i % resizeIter == 0){
-      MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
-           totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
-      findBoundary(totalParticles, pmin, pmax);
-      assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
-      newParticles.resize(myParticles.size());
-    } 
+        recvCounts[pid] = myParticles.size() * sizeof(Particle);
+        MPI_Bcast (&(recvCounts+4*pid),1,MPI_INT,pid,MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        for(int p = 0; p < nproc; p++){
+            displs[p] = !p ? recvCounts[p] : recvCounts[p] + displs[p-1];
+        }//modify the revcount and displs again
+
+
+        MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
+            totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
+        findBoundary(totalParticles, pmin, pmax);
+        assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
+        newParticles.resize(myParticles.size());
+        } 
     Vec2 myMin, myMax;
     findBoundary(myParticles, myMin, myMax);
     std::vector<float> boundary{myMin.x, myMin.y, myMax.x, myMax.y};
     MPI_Allgatherv(boundary.data(), sizeof(float) * 4, MPI_FLOAT, allLimits.data(), recvCounts,
       displs, MPI_FLOAT, MPI_COMM_WORLD);
-    constructRelatedP(myParticles, relativeParticles, allLimits, myMin, myMax, nproc, stepParams.cullRadius);
+    constructRelatedP(myParticles, relativeParticles, allLimits, myMin, myMax, nproc, stepParams.cullRadius, pid, recvCounts);
     QuadTree tree;
     QuadTree::buildQuadTree(relativeParticles, tree);
     simulateStep(tree, myParticles, newParticles, stepParams);
   }
   //displ and recvCounts should change after each itration
+  recvCounts[pid] = myParticles.size() * sizeof(Particle);
+  MPI_Bcast (&(recvCounts+4*pid),1,MPI_INT,pid,MPI_COMM_WORLD);
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  for(int p = 0; p < nproc; p++){
+    displs[p] = !p ? recvCounts[p] : recvCounts[p] + displs[p-1];
+    }//modify the revcount and displs again
+
   MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
            totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
 
