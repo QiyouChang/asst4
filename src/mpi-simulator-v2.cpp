@@ -2,14 +2,17 @@
 #include "mpi.h"
 #include "quad-tree.h"
 #include "timing.h"
-#include <math.h>
 
-void simulateStep(const QuadTree &quadTree,
-                  std::vector<Particle> &newParticles, StepParameters params, int pid, int nproc, int chunksize) {
+int resizeIter = 4;
+
+//quadTree is built from relativeParticles 
+//newParticles is particles in the grid ==== myParticles
+void simulateStep(const QuadTree &quadTree, std::vector<Particle> &myParticles,
+                  std::vector<Particle> &newParticles, StepParameters params, int pid, int nproc) {
   // TODO: paste your sequential implementation in Assignment 3 here.
   // (or you may also rewrite a new version)
-  for (int i = 0; i < newParticles.size(); i++) {
-    auto pi = particles[i+pid*chunksize];
+  for (int i = 0; i < (int)myParticles.size(); i++) {
+    auto pi = myParticles[i];
     Vec2 force = Vec2(0.0f, 0.0f);
     std::vector<Particle> temp; 
     quadTree.getParticles(temp, pi.position, params.cullRadius); 
@@ -43,7 +46,9 @@ void findBoundary(std::vector<Particle> &newParticles, Vec2 pmin, Vec2 pmax){
 
 // This helper function will assign the totalParticles to each grid. The assignment will be stored in myParticles. 
 // pmin, pmax are result from findBoundary(totalParticles)
-void assignGrid(std::vector<Particle> &totalParticles, Vec2 pmin, Vec2 pmax, std::vector<Particle> &myParticles, int id, int gridSize){
+// gridSize is num of grids in one row/col
+void assignGrid(std::vector<Particle> &totalParticles, Vec2 pmin, Vec2 pmax, 
+    std::vector<Particle> &myParticles, int id, int gridSize){
 
   int row = id / gridSize;
   int col = id % gridSize;
@@ -56,19 +61,117 @@ void assignGrid(std::vector<Particle> &totalParticles, Vec2 pmin, Vec2 pmax, std
   for (auto &p : totalParticles){
     float x = p.position.x;
     float y = p.position.y;
-    if(x >= toLeftx && x < bottomRightx && y >= topLefty && y < bottomRighty){
+    if(x >= topLeftx && x < bottomRightx && y >= topLefty && y < bottomRighty){
       myParticles.push_back(p);
     }
+  }
+
+}
+
+
+void assignAll(std::vector<Particle> &totalParticles, 
+    std::vector<Particle> &myParticles, Vec2 pmin, 
+    Vec2 pmax, int nproc, int pid, int gridSize){
+
+  int sendSize = 0;
+  MPI_Request request;
+  if(pid == 0){
+    for(int receiver = 1; receiver < nproc; receiver++){
+      assignGrid(totalParticles, pmin, pmax, myParticles, pid, gridSize);
+      sendSize = (int)myParticles.size();
+      MPI_Isend(&sendSize, 1, MPI_INT, pid, 1, MPI_COMM_WORLD, &request);
+      MPI_Isend(&myParticles, sendSize * sizeof(Particle), MPI_BYTE, pid, 1, MPI_COMM_WORLD, &request);
+    }
+    assignGrid(totalParticles, pmin, pmax, myParticles, 0, gridSize);
+  }
+  else{
+    MPI_Recv(&sendSize, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    myParticles.resize(sendSize);
+    MPI_Recv(&myParticles, sendSize, MPI_BYTE, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
   }
 }
 
 
-//this function aims to find possibly overlapping region : L represents min; R represents max
-bool findRelatedParticles(Vec2 target_L, Vec2 target_R, Vec2 comp_L, Vec2 comp_R){
-  //4 cases left, right, top, bottom; otherwise, overlapping
-  return (!((target_L.x > comp_R.x) || (target_R.x < comp_L.x) || (target_L.y > comp_R.y) || (target_R.y < comp_L.y)));
+// check if two grid has force
+// l1, r1 are min, max of the grid we are currently on 
+// l2, r2 are min, max of the grid we want to check if there is a force on current grid.
+// radius the force affecting distance
+bool forceCheck(Vec2 l1, Vec2 r1, Vec2 l2, Vec2 r2, float radius){
+
+  // compute the actual affect grid
+  l1.x += radius;
+  l1.y += radius;
+  r1.x += radius;
+  r1.y += radius;
+
+  // If one rectangle is on left side of other
+  if (l1.x > r2.x || l2.x > r1.x)
+      return false;
+
+  // If one rectangle is above other
+  if (r1.y > l2.y || r2.y > l1.y)
+      return false;
+
+  return true;
 }
 
+// void constructRelatedP(std::vector<Particle> &relativeParticles, Vec2 target_L, Vec2 target_R, int nproc, int pid){
+//   std::vector<Vec2> dimensions{target_L, target_R};
+//   std::vector<Vec2> recvDimensions;
+//   MPI_Request request;
+//   int rCount = 0;
+//   std::vector<Particle> receivedP;
+//   for(int i = 0; i < nproc, i++){
+//     if(i != pid){
+//       MPI_Isend(&dimensiions, sizeof(Vec2) * 2, MPI_BYTE, i, 1, MPI_COMM_WORLD, &request);
+//       MPI_Waitall(nproc-1, request, MPI_COMM_WORLD);
+//       MPI_Recv(&recvDimensions, sizeof(Vec2) * 2, MPI_BYTE, , 1, MPI_COMM_WORLD, &request)
+//       MPI_Recv(&rCount, sizeof(int), MPI_INT, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+//       if(rCount != 0){
+//         receivedP.resize(rCount);
+//         MPI_Recv(&receivedP, sizeof(Particle) * rCount, MPI_BYTE, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+//         for(auto &p: receivedP){
+//           relativeParticles.push_back(p);
+//         }
+//       }
+//     }
+//   }
+// }
+
+void constructRelatedP(std::vector<Particle> &myParticles, std::vector<Particle> &relativeParticles, 
+        Vec2 target_L, Vec2 target_R, int nproc, float radius){
+  int *displs = (int *)malloc(nproc*sizeof(int));
+  int *recvCounts = (int *)malloc(nproc*sizeof(int));
+  std::vector<float> boundary{target_L.x, target_L.y, target_R.x, target_R.y};
+  std::vector<float> allLimits;
+  allLimits.resize(nproc * 4);
+  for (int i = 0; i < nproc; i++){
+    recvCounts[i] = 4 * sizeof(float);
+    displs[i] = 4 * sizeof(float) * i;
+  }
+  MPI_Allgatherv(boundary.data(), sizeof(float) * 4, MPI_FLOAT, allLimits.data(), recvCounts,
+      displs, MPI_FLOAT, MPI_COMM_WORLD);
+
+  Vec2 comp_L, comp_R;
+  std::vector<bool> overlap;
+  overlap.resize(nproc);
+  for(int j = 0; j < nproc; j ++){
+    comp_L.x = allLimits[j * 4];
+    comp_L.y = allLimits[j * 4 + 1];
+    comp_R.x = allLimits[j * 4 + 2];
+    comp_R.y = allLimits[j * 4 + 3];
+    if (forceCheck(target_L, target_R, comp_L, comp_R, radius)){
+      overlap[j] = true; 
+    } else{
+      overlap[j] = false;
+    }
+  }
+  // for(int k = 0; k < nproc; k++){
+  //   if(overlap[k]){
+  //     MPI_Isend()
+  //   }
+  // } 
+}
 
 int main(int argc, char *argv[]) {
   int pid;
@@ -81,83 +184,62 @@ int main(int argc, char *argv[]) {
   // Get total number of processes specificed at start of run
   MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-  int gridSize = sqrt(nproc);
-
   StartupOptions options = parseOptions(argc, argv);
-  int Psize = sizeof(Particle);
-
-  std::vector<Particle> totalParticles, relativeParticles, newParticles, myParticles;
-  if (pid == 0) { //load all particles to master 
-    loadFromFile(options.inputFile, totalParticles);
-    size = (int)particles.size();
-  }
-
   StepParameters stepParams = getBenchmarkStepParams(options.spaceSize);
 
-  //send size
-  MPI_Bcast(&size, 1, MPI_INT, 0, comm);
-  particles.resize(size);
-  //send particles to all processes
-  MPI_Bcast(particles.data(), Psize * size, MPI_BYTE, MASTER, MPI_COMM_WORLD);
-  //find boundary and assign particles to different grid
+  
+  int gridSize = (int)sqrt(nproc);
+  
+  std::vector<Particle> totalParticles, relativeParticles, myParticles, newParticles;
+  if (pid == 0) { //load all particles to master 
+    loadFromFile(options.inputFile, totalParticles); 
+  }
+
+  // Don't change the timing for totalSimulationTime.
+  int *displs = (int *)malloc(nproc*sizeof(int));
+  int *recvCounts = (int *)malloc(nproc*sizeof(int));
   Vec2 pmin(1e30f, 1e30f);
   Vec2 pmax(-1e30f, -1e30f);
-  findBoundary(&particles, pmin, pmax);
-  assignGrid(&particles, pmin, pmax, &myParticles, pid, gridSize);
-  int gridPsize = myParticles.size();
-  myParticles.resize(gridPsize); //??issue with resize
-  
-  // Don't change the timeing for totalSimulationTime.
-  
+  if(pid == 0){
+    findBoundary(totalParticles, pmin, pmax);
+  }
+  assignAll(totalParticles,  myParticles, pmin, pmax, nproc, pid, gridSize);
+  newParticles.resize(myParticles.size());
+  recvCounts[pid] = myParticles.size() * sizeof(Particle);
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  int sum = 0;
+  for(int p = 0; p < nproc; p++){
+    displs[p] = recvCounts[p] + sum;
+    sum += recvCounts[p];
+  }
+
   Timer totalSimulationTimer;
 
   for (int i = 0; i < options.numIterations; i++) {
-    //check reassigning
-    if(i % RESIZEFACTOR == 0){
-      relativeParticles.resize(gridPsize);
-      newParticles.resize(gridPsize);
-      //Gathering first and thenn redo the process before the loop
-      MPI_Barrier(MPI_COMM_WORLD);
-      MPI_Scatterv(totalParticles.data(),(int)totalParticles.size()* sizeof(Particle), displs, MPI_BYTE,
-          relativeParticles.data(), recvcounts, MPI_BYTE, 0, MPI_COMM_WORLD);
-      MPI_Barrier(MPI_COMM_WORLD);
-    }
-
-
-
-    //check overlapping
-    for (int index; index < nproc; index++){
-      //??how to obtain the boundary of other processes instead of using communications 
-      if ((index != pid)&&(findRelatedParticles())){
-        send its own particles 
-        recv the others particle
-      }
-    }
-    combine related particles together //??how
-
-    //simulate step
+    if(i % resizeIter == 0){
+      MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
+           totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
+      findBoundary(totalParticles, pmin, pmax);
+      assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
+      newParticles.resize(myParticles.size());
+    } 
+    Vec2 myMin, myMax;
+    findBoundary(myParticles, myMin, myMax);
+    constructRelatedP(myParticles, relativeParticles, myMin, myMax, nproc, stepParams.cullRadius);
     QuadTree tree;
-    QuadTree::buildQuadTree(related_particles, tree);
-    simulateStep(tree, particles, newParticles, stepParams);
-
-    
-    //update boundary with current particles after simulating step
-    for (auto &p : relativeParticles) {
-      pmin.x = fminf(pmin.x, p.position.x);
-      pmin.y = fminf(pmin.y, p.position.y);
-      pmax.x = fmaxf(pmax.x, p.position.x);
-      pmax.y = fmaxf(pmax.y, p.position.y);
-    }
-   
-    particles.swap(newParticles);
+    QuadTree::buildQuadTree(relativeParticles, tree);
+    simulateStep(tree, myParticles, newParticles, stepParams, pid, nproc);
   }
+  MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
+           totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
 
   MPI_Barrier(MPI_COMM_WORLD);
   double totalSimulationTime = totalSimulationTimer.elapsed();
 
   if (pid == 0) {
     printf("total simulation time: %.6fs\n", totalSimulationTime);
-    saveToFile(options.outputFile, particles);
+    saveToFile(options.outputFile, totalParticles);
   }
 
   MPI_Finalize();
