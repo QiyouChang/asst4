@@ -8,7 +8,7 @@ int resizeIter = 4;
 //quadTree is built from relativeParticles 
 //newParticles is particles in the grid ==== myParticles
 void simulateStep(const QuadTree &quadTree, std::vector<Particle> &myParticles,
-                  std::vector<Particle> &newParticles, StepParameters params, int pid, int nproc) {
+                  std::vector<Particle> &newParticles, StepParameters params) {
   // TODO: paste your sequential implementation in Assignment 3 here.
   // (or you may also rewrite a new version)
   for (int i = 0; i < (int)myParticles.size(); i++) {
@@ -115,42 +115,12 @@ bool forceCheck(Vec2 l1, Vec2 r1, Vec2 l2, Vec2 r2, float radius){
   return true;
 }
 
-// void constructRelatedP(std::vector<Particle> &relativeParticles, Vec2 target_L, Vec2 target_R, int nproc, int pid){
-//   std::vector<Vec2> dimensions{target_L, target_R};
-//   std::vector<Vec2> recvDimensions;
-//   MPI_Request request;
-//   int rCount = 0;
-//   std::vector<Particle> receivedP;
-//   for(int i = 0; i < nproc, i++){
-//     if(i != pid){
-//       MPI_Isend(&dimensiions, sizeof(Vec2) * 2, MPI_BYTE, i, 1, MPI_COMM_WORLD, &request);
-//       MPI_Waitall(nproc-1, request, MPI_COMM_WORLD);
-//       MPI_Recv(&recvDimensions, sizeof(Vec2) * 2, MPI_BYTE, , 1, MPI_COMM_WORLD, &request)
-//       MPI_Recv(&rCount, sizeof(int), MPI_INT, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-//       if(rCount != 0){
-//         receivedP.resize(rCount);
-//         MPI_Recv(&receivedP, sizeof(Particle) * rCount, MPI_BYTE, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-//         for(auto &p: receivedP){
-//           relativeParticles.push_back(p);
-//         }
-//       }
-//     }
-//   }
-// }
-
 void constructRelatedP(std::vector<Particle> &myParticles, std::vector<Particle> &relativeParticles, 
-        Vec2 target_L, Vec2 target_R, int nproc, float radius){
-  int *displs = (int *)malloc(nproc*sizeof(int));
-  int *recvCounts = (int *)malloc(nproc*sizeof(int));
-  std::vector<float> boundary{target_L.x, target_L.y, target_R.x, target_R.y};
-  std::vector<float> allLimits;
-  allLimits.resize(nproc * 4);
-  for (int i = 0; i < nproc; i++){
-    recvCounts[i] = 4 * sizeof(float);
-    displs[i] = 4 * sizeof(float) * i;
+        std::vector<float> &allLimits, Vec2 target_L, Vec2 target_R, int nproc, float radius){
+  
+  for(int i = 0; i < myParticles.size(); i++){
+    relativeParticles[i] = myParticles[i];
   }
-  MPI_Allgatherv(boundary.data(), sizeof(float) * 4, MPI_FLOAT, allLimits.data(), recvCounts,
-      displs, MPI_FLOAT, MPI_COMM_WORLD);
 
   Vec2 comp_L, comp_R;
   std::vector<bool> overlap;
@@ -186,11 +156,13 @@ int main(int argc, char *argv[]) {
 
   StartupOptions options = parseOptions(argc, argv);
   StepParameters stepParams = getBenchmarkStepParams(options.spaceSize);
-
   
   int gridSize = (int)sqrt(nproc);
   
   std::vector<Particle> totalParticles, relativeParticles, myParticles, newParticles;
+  std::vector<float> allLimits;
+  allLimits.resize(nproc * 4);
+
   if (pid == 0) { //load all particles to master 
     loadFromFile(options.inputFile, totalParticles); 
   }
@@ -198,6 +170,8 @@ int main(int argc, char *argv[]) {
   // Don't change the timing for totalSimulationTime.
   int *displs = (int *)malloc(nproc*sizeof(int));
   int *recvCounts = (int *)malloc(nproc*sizeof(int));
+  int *particledispls = (int *)malloc(nproc*sizeof(int));
+  int *particlerecvCounts = (int *)malloc(nproc*sizeof(int));
   Vec2 pmin(1e30f, 1e30f);
   Vec2 pmax(-1e30f, -1e30f);
   if(pid == 0){
@@ -212,6 +186,8 @@ int main(int argc, char *argv[]) {
   for(int p = 0; p < nproc; p++){
     displs[p] = recvCounts[p] + sum;
     sum += recvCounts[p];
+    particlerecvCounts[p] = 4 * sizeof(float);
+    particledispls[p] = 4 * sizeof(float) * p;
   }
 
   Timer totalSimulationTimer;
@@ -226,10 +202,13 @@ int main(int argc, char *argv[]) {
     } 
     Vec2 myMin, myMax;
     findBoundary(myParticles, myMin, myMax);
-    constructRelatedP(myParticles, relativeParticles, myMin, myMax, nproc, stepParams.cullRadius);
+    std::vector<float> boundary{myMin.x, myMin.y, myMax.x, myMax.y};
+    MPI_Allgatherv(boundary.data(), sizeof(float) * 4, MPI_FLOAT, allLimits.data(), recvCounts,
+      displs, MPI_FLOAT, MPI_COMM_WORLD);
+    constructRelatedP(myParticles, relativeParticles, allLimits, myMin, myMax, nproc, stepParams.cullRadius);
     QuadTree tree;
     QuadTree::buildQuadTree(relativeParticles, tree);
-    simulateStep(tree, myParticles, newParticles, stepParams, pid, nproc);
+    simulateStep(tree, myParticles, newParticles, stepParams);
   }
   MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
            totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
