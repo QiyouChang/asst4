@@ -38,11 +38,11 @@ void assignGrid(std::vector<Particle> &totalParticles, Vec2 pmin, Vec2 pmax,
   int row = id / gridSize;
   int col = id % gridSize;
   
-  float topLeftx = pmin.x + (float)(pmax.x - pmin.x) * row / gridSize ;
-  float topLefty = pmin.y + (float)(pmax.y - pmin.y) * col / gridSize ;
-  float bottomRightx = pmin.x + (float)(pmax.x - pmin.x) * (row+1.0f) / gridSize ;
-  float bottomRighty = pmin.y + (float)(pmax.y - pmin.y) * (col+1.0f) / gridSize ;
-  std::cerr<<"dimension sizes: %f, %f, %f, %f" << topLeftx << topLefty << bottomRightx << bottomRighty << "\n";
+  float topLeftx = pmin.x + (pmax.x - pmin.x) * row / gridSize ;
+  float topLefty = pmin.y + (pmax.y - pmin.y) * col / gridSize ;
+  float bottomRightx = pmin.x + (pmax.x - pmin.x) * (row+1.0f) / gridSize ;
+  float bottomRighty = pmin.y + (pmax.y - pmin.y) * (col+1.0f) / gridSize ;
+  
   myParticles.resize(totalParticles.size());
   int count = 0;
   
@@ -57,7 +57,7 @@ void assignGrid(std::vector<Particle> &totalParticles, Vec2 pmin, Vec2 pmax,
     }
   }
   myParticles.resize(count);
-  std::cerr<<"my particles in assign grid size is: " << (int)myParticles.size() << " " << id << "\n";
+  
 }
 
 //this is the function where all the particles are assigned to each individual grid
@@ -72,12 +72,12 @@ void assignAll(std::vector<Particle> &totalParticles,
     //request.resize(nproc * 2 - 2);
     for(int receiver = 1; receiver < nproc; receiver++){
       //first compute particles for the receiver which stored in myParticels
-      std::cerr<<"receiver is:  " <<receiver << "totalParticles size: " << totalParticles.size() << "\n";
+      
       std::vector<Particle> thisParticles;
       assignGrid(totalParticles, pmin, pmax, thisParticles, receiver, gridSize);
       //std::cerr<<"my particles in assign all size is:  %d" << (int)myParticles.size() << "\n";
       sendSize = (int)thisParticles.size();
-      std::cerr<<"sendSize: " << sendSize << "\n";
+      
       //then send the size of particles and later the exact array of particles.
       MPI_Send(&sendSize, 1, MPI_INT, receiver, 1, MPI_COMM_WORLD);
       MPI_Send(thisParticles.data(), sendSize * sizeof(Particle), MPI_BYTE, receiver, 2, MPI_COMM_WORLD);
@@ -92,14 +92,12 @@ void assignAll(std::vector<Particle> &totalParticles,
     //request.resize(2);
     MPI_Recv(&sendSize, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     myParticles.resize(sendSize);
-    std::cerr<<"sendSize: when pid != 0: " << sendSize << "\n";
+    
     MPI_Recv(myParticles.data(), sendSize * sizeof(Particle), MPI_BYTE, 0, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    std::cerr<<"my particles in assign all size pid !=0 is:  " << (int)myParticles.size() << "\n";
+    
     //MPI_Waitall(2, request.data(), status);
   }
 }
-
-
 
 // check if two grid has force
 // l1, r1 are min, max of the grid we are currently on 
@@ -118,7 +116,7 @@ bool forceCheck(Vec2 l1, Vec2 r1, Vec2 l2, Vec2 r2, float radius){
       return false;
 
   // If one rectangle is above other
-  if (r1.y > l2.y || r2.y > l1.y)
+  if (l1.y > r2.y || l2.y > r1.y)
       return false;
 
   return true;
@@ -126,26 +124,25 @@ bool forceCheck(Vec2 l1, Vec2 r1, Vec2 l2, Vec2 r2, float radius){
 
 //this is the function that would compute all the relative particles of myparticles and store in rP vector
 void constructRelatedP(std::vector<Particle> &myParticles, std::vector<Particle> &relativeParticles, 
-        std::vector<float> &allLimits, Vec2 target_L, Vec2 target_R, int nproc, float radius, int pid, int *recvCounts){
+        float *allLimits, Vec2 target_L, Vec2 target_R, int nproc, float radius, int pid, int *recvCounts){
   
   // copy over myParticles to the relativeParticles 
-  //std::cerr<<"stop here" << relativeParticles.size() << "\n";
+
   relativeParticles.resize(myParticles.size());
-  //std::cerr<<"stop here 6 \n";
+ 
   for(int i = 0; i < (int)myParticles.size(); i++){
     relativeParticles[i] = myParticles[i];
   }
 
   int mySize = (int)myParticles.size();
   Vec2 comp_L, comp_R;
-  std::vector<bool> overlap;
-  overlap.resize(nproc);
+  bool overlap[nproc];
 
-  MPI_Request request[nproc * 2];
+  MPI_Request request[nproc];
 
   int msgcount = 0;
 
-  std::cerr <<"sizeof myParticles: " << mySize << "\n";
+  
 
   for(int j = 0; j < nproc; j ++){
     if(j != pid){
@@ -154,35 +151,40 @@ void constructRelatedP(std::vector<Particle> &myParticles, std::vector<Particle>
       comp_L.y = allLimits[j * 4 + 1];
       comp_R.x = allLimits[j * 4 + 2];
       comp_R.y = allLimits[j * 4 + 3];
-      std::cerr << "reach here?" << target_L.x << " " << target_L.y << " " << target_R.x << " " << target_R.y;
+      
       if (forceCheck(target_L, target_R, comp_L, comp_R, radius)){
         //send the particles 
-        std::cerr <<"reach here?";
+        
         MPI_Isend(myParticles.data(), mySize * sizeof(Particle), MPI_BYTE, j, pid, MPI_COMM_WORLD, &request[msgcount]);
+        
         overlap[j] = true; 
         msgcount += 1;
-      } 
+      } else{
+        overlap[j] = false;
+      }
     }
     else{
       overlap[j] = false;
     }
   }
   
-  //std::cerr<<"msgcount: " << msgcount << "\n";
-  int offset2 = relativeParticles.size();
+  
+  int offset2 = relativeParticles.size(); //number of particles
   for(int k = 0; k < nproc; k++){
     if(overlap[k]){
-        int sendSize = recvCounts[k];
+        int sendSize = recvCounts[k]; //total bytes in process k
+        
         relativeParticles.resize(relativeParticles.size() + sendSize / sizeof(Particle));
-        MPI_Irecv(relativeParticles.data() + offset2 * sizeof(Particle), sendSize, MPI_BYTE, k, 1, MPI_COMM_WORLD, &request[msgcount]); //store the particles to myparticles with the offset
-        offset2 += sendSize;
-        msgcount += 1;
+        
+        MPI_Recv(relativeParticles.data() + offset2, sendSize, MPI_BYTE, k, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE); //store the particles to myparticles with the offset
+        offset2 += sendSize/sizeof(Particle);
+        
+        //msgcount += 1;
     }
   } 
   MPI_Status status[msgcount];
   MPI_Waitall(msgcount, request, status);
-  std::cerr<<"offset2: " << offset2 << "\n";
-  std::cerr<<"msgcount: " << msgcount << "\n";
+ 
 }
 
 bool sortParticleId(Particle a, Particle b){
@@ -207,8 +209,8 @@ int main(int argc, char *argv[]) {
   int gridSize = (int)sqrt(nproc);
   
   std::vector<Particle> totalParticles, relativeParticles, myParticles, newParticles;
-  std::vector<float> allLimits;
-  allLimits.resize(nproc * 4);
+  float allLimits[nproc * 4];
+  //allLimits.resize(nproc * 4);
 
   if (pid == 0) { //load all particles to master 
     loadFromFile(options.inputFile, totalParticles); 
@@ -234,26 +236,19 @@ int main(int argc, char *argv[]) {
     pmin.y = (pmin.y < 0) ? pmin.y -1 : pmin.y + 1;
     pmax.x = (pmax.x < 0) ? pmax.x -1 : pmax.x + 1;
     pmax.y = (pmax.y < 0) ? pmax.y -1 : pmax.y + 1;
-    //findBoundary(totalParticles, pmin, pmax);
   }
   
-  std::cerr<<"pid is: %d" << pid << " pmin, pmax is %f, %f" << pid << pmin.x << pmin.y << "\n";
-  std::cerr<<"my particles size before loop is: " << (int)myParticles.size()  << " " << totalParticles.size() << " " << newParticles.size() << "\n";
   MPI_Barrier(MPI_COMM_WORLD);
   assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
   newParticles.resize(myParticles.size());
 
   //how much particles each process get (*sizeof(Particle)) is recorded in recvCounts 
-  
 
   recvCounts[pid] = myParticles.size() * sizeof(Particle);
   int local_recv = recvCounts[pid];
   MPI_Allgather(&local_recv, 1, MPI_INT, &recvCounts, 1, MPI_INT, MPI_COMM_WORLD);
   
   //MPI_Bcast(&(recvCounts[pid]),1,MPI_INT,pid,MPI_COMM_WORLD);
-
-  
-  MPI_Barrier(MPI_COMM_WORLD);
 
   for(int p = 0; p < nproc; p++){
     displs[p] = (p == 0) ? 0 : recvCounts[p-1] + displs[p-1];
@@ -265,22 +260,23 @@ int main(int argc, char *argv[]) {
   Timer totalSimulationTimer;
 
   for (int i = 0; i < options.numIterations; i++) {
-    if(i % resizeIter == 3){
-        
+    
+    if(i % resizeIter == 0 && i != 0){
+      
         recvCounts[pid] = myParticles.size() * sizeof(Particle);
         local_recv = recvCounts[pid];
-        MPI_Barrier(MPI_COMM_WORLD);
-        std::cerr<<"reach here1 " << (int)myParticles.size() << "\n";
-        MPI_Allgather(&local_recv, 1, MPI_INT, &recvCounts, 1, MPI_INT, MPI_COMM_WORLD);
-        std::cerr<<"reach here2 " << (int)myParticles.size() << "\n";
+       
+        MPI_Allgather(&local_recv, 1, MPI_INT, recvCounts, 1, MPI_INT, MPI_COMM_WORLD);
+        
         for(int p = 0; p < nproc; p++){
             displs[p] = (p == 0) ? 0 : recvCounts[p-1] + displs[p-1];
         }//modify the revcount and displs again
-
-        MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
-            totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
+        
+        totalParticles.resize((displs[nproc-1] + recvCounts[nproc -1])/sizeof(Particle)); 
+        MPI_Gatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
+            totalParticles.data(), recvCounts, displs, MPI_BYTE,0, MPI_COMM_WORLD);
         std::vector<Particle> myParticles;
-        //std::cerr<<"reach here1 " << (int)myParticles.size() << " " << (int)totalParticles.size() << "\n";
+        
         for (auto &p : totalParticles) {
           pmin.x = fminf(pmin.x, p.position.x);
           pmin.y = fminf(pmin.y, p.position.y);
@@ -293,41 +289,64 @@ int main(int argc, char *argv[]) {
         pmax.x = (pmax.x < 0) ? pmax.x -1 : pmax.x + 1;
         pmax.y = (pmax.y < 0) ? pmax.y -1 : pmax.y + 1;
 
+    //     if (!pid){
+    //   Timer t1;
+    // assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
+    // double time_reassign = t1.elapsed();
+    // std::cerr<<"ReassignAll time:  " << time_reassign << "\n";
+    // }else assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
+    
+
         assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
         newParticles.resize(myParticles.size());
+
+        
+       
     } 
     Vec2 myMin, myMax;
-    std::cerr<<"my particles iteration start size is:  %d" << (int)myParticles.size() << "\n";
-    //findBoundary(myParticles, myMin, myMax);
+    
+
     for (auto &p : myParticles) {
       myMin.x = fminf(myMin.x, p.position.x);
       myMin.y = fminf(myMin.y, p.position.y);
       myMax.x = fmaxf(myMax.x, p.position.x);
       myMax.y = fmaxf(myMax.y, p.position.y);
     }
-    myMin.x = (myMin.x < 0) ? myMin.x -1 : myMin.x + 1;
-    myMin.y = (myMin.y < 0) ? myMin.y -1 : myMin.y + 1;
-    myMax.x = (myMax.x < 0) ? myMax.x -1 : myMax.x + 1;
-    myMax.y = (myMax.y < 0) ? myMax.y -1 : myMax.y + 1;
-    
-    std::cerr<<"stop here 1 \n";
+
+
     std::vector<float> boundary{myMin.x, myMin.y, myMax.x, myMax.y};
-    MPI_Allgatherv(boundary.data(), 4, MPI_FLOAT, allLimits.data(), particlerecvCounts,
-      particledispls, MPI_FLOAT, MPI_COMM_WORLD);
-    std::cerr<<"stop here 2 \n";
+    MPI_Allgatherv(boundary.data(), 4, MPI_FLOAT, allLimits, particlerecvCounts,
+      particledispls, MPI_BYTE, MPI_COMM_WORLD);
     
+    std::vector<Particle> relativeParticles;
+    if (!pid){
+      Timer t1;
     constructRelatedP(myParticles, relativeParticles, allLimits, myMin, myMax, nproc, stepParams.cullRadius, pid, recvCounts);
-    std::cerr<<"stop here 3 relativeParticles size is: "<< relativeParticles.size() << "\n";
-    MPI_Barrier(MPI_COMM_WORLD);
+    double time_reassign = t1.elapsed();
+    std::cerr<<"total constructRelatedP time:  " << time_reassign << "\n";
+    }else constructRelatedP(myParticles, relativeParticles, allLimits, myMin, myMax, nproc, stepParams.cullRadius, pid, recvCounts);
+    
+
+    //MPI_Barrier(MPI_COMM_WORLD);
     QuadTree tree;
     QuadTree::buildQuadTree(relativeParticles, tree);
-    std::cerr<<"stop here 4 \n";
+    
+    newParticles.resize(myParticles.size());
+
+
+        if (!pid){
+      Timer t1;
     simulateStep(tree, myParticles, newParticles, stepParams);
-    std::cerr<<"stop here 5 \n" << myParticles.size() << " " << newParticles.size() << "\n";
-    MPI_Barrier(MPI_COMM_WORLD);
+    double time_reassign = t1.elapsed();
+    std::cerr<<"SimulateStep time:  " << time_reassign << "\n";
+    }else simulateStep(tree, myParticles, newParticles, stepParams);
+    //simulateStep(tree, myParticles, newParticles, stepParams);
+    
+    //MPI_Barrier(MPI_COMM_WORLD);
     myParticles.swap(newParticles);
 
-    std::cerr<<"my particles iteration end size is:  %d" << (int)myParticles.size() << "\n";
+    
+    
   }
   //displ and recvCounts should change after each itration
   recvCounts[pid] = myParticles.size() * sizeof(Particle);
@@ -337,12 +356,9 @@ int main(int argc, char *argv[]) {
   for(int p = 0; p < nproc; p++){
     displs[p] = (p == 0) ? 0 : recvCounts[p-1] + displs[p-1];
   }//modify the revcount and displs again
-
-  MPI_Allgatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
-           totalParticles.data(), recvCounts, displs, MPI_BYTE, MPI_COMM_WORLD);
-  printf("my particles size: %d\n", (int)myParticles.size());
-  MPI_Barrier(MPI_COMM_WORLD);
-
+  totalParticles.resize((displs[nproc-1] + recvCounts[nproc-1])/sizeof(Particle));
+  MPI_Gatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
+            totalParticles.data(), recvCounts, displs, MPI_BYTE,0, MPI_COMM_WORLD);
   double totalSimulationTime = totalSimulationTimer.elapsed();
 
   if (pid == 0) {
