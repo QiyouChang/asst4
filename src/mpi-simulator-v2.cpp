@@ -224,7 +224,7 @@ int main(int argc, char *argv[]) {
   int Psize = sizeof(Particle);
   
   std::vector<Particle> totalParticles, relativeParticles, myParticles, newParticles;
-  float allLimits[nproc * 4];
+  float *allLimits = (float*)malloc(nproc * 4*sizeof(float));
   //allLimits.resize(nproc * 4);
 
   if (pid == 0) { //load all particles to master 
