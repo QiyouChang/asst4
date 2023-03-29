@@ -1,6 +1,3 @@
-
-
-
 #include "common.h"
 #include "mpi.h"
 #include "quad-tree.h"
@@ -9,13 +6,17 @@
 
 int resizeIter = 100; 
 
+float buildquatree = 0;
+float simulatestep = 0;
+float constructrelated = 0;
+float allgather = 0;
+
 //quadTree is built from relativeParticles 
 //newParticles is particles in the grid ==== myParticles
 void simulateStep(const QuadTree &quadTree, std::vector<Particle> &myParticles,
                   std::vector<Particle> &newParticles, StepParameters params) {
   // TODO: paste your sequential implementation in Assignment 3 here.
   // (or you may also rewrite a new version)
-  //// std::cerr<< newParticles.size() << " " << myParticles.size() << "\n";
   std::vector<Particle> temp; 
   for (int i = 0; i < (int)newParticles.size(); i++) {
     auto pi = myParticles[i];
@@ -78,7 +79,7 @@ void assignAll(std::vector<Particle> &totalParticles,
       
       std::vector<Particle> thisParticles;
       assignGrid(totalParticles, pmin, pmax, thisParticles, receiver, gridSize);
-      //// std::cerr<<"my particles in assign all size is:  %d" << (int)myParticles.size() << "\n";
+      
       sendSize = (int)thisParticles.size();
       
       //then send the size of particles and later the exact array of particles.
@@ -180,7 +181,6 @@ void constructRelatedP(std::vector<Particle> &myParticles, std::vector<Particle>
   } 
   MPI_Status status[msgcount];
   MPI_Waitall(msgcount, request, status);
- 
 }
 
 bool sortParticleId(Particle a, Particle b){
@@ -209,7 +209,7 @@ int main(int argc, char *argv[]) {
   //std::vector<float> allLimits(4*nproc);
 
   //allLimits.resize(nproc * 4);
-  // std::cerr<<__LINE__<<"      "<<pid<<std::endl;
+
   if (pid == 0) { //load all particles to master 
     loadFromFile(options.inputFile, totalParticles); 
   }
@@ -256,7 +256,9 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < options.numIterations; i++) {
 
     if(i % resizeIter == 0 && i != 0){
- 
+
+      Timer t1;
+      
         recvCounts[pid] = myParticles.size() * sizeof(Particle);
         local_recv = recvCounts[pid];
        
@@ -286,30 +288,55 @@ int main(int argc, char *argv[]) {
         assignAll(totalParticles, myParticles, pmin, pmax, nproc, pid, gridSize);
         newParticles.resize(myParticles.size());
 
-        
+        double totalSimulationTime1 = t1.elapsed();
+        if (!pid) std::cerr<< "reassign elasped: "<< totalSimulationTime1<<std::endl;
     } 
     Vec2 myMin, myMax;
     
-
+  Timer t11;
     for (auto &p : myParticles) {
       myMin.x = fminf(myMin.x, p.position.x);
       myMin.y = fminf(myMin.y, p.position.y);
       myMax.x = fmaxf(myMax.x, p.position.x);
       myMax.y = fmaxf(myMax.y, p.position.y);
     }
+    double totalSimulationTime11 = t11.elapsed();
+        if (!pid) std::cerr<< "traverse all particles: "<< totalSimulationTime11<<std::endl;
 
+    Timer t10;
     std::vector<float> boundary{myMin.x, myMin.y, myMax.x, myMax.y};
     MPI_Allgather(boundary.data(), 4, MPI_FLOAT, allLimits, 4*nproc,MPI_FLOAT, MPI_COMM_WORLD);
+    double totalSimulationTime10 = t10.elapsed();
+        if (!pid) std::cerr<< "all gather: "<< totalSimulationTime10<<std::endl;
+
 
     std::vector<Particle> relativeParticles;
+    
+
+    Timer t2;
     constructRelatedP(myParticles, relativeParticles, allLimits, myMin, myMax, nproc, stepParams.cullRadius, pid, recvCounts);
+    double totalSimulationTime2 = t2.elapsed();
+        if (!pid) std::cerr<< "construct related particles: "<< totalSimulationTime2<<std::endl;
+
 
     QuadTree tree;
+
+    Timer t3;
     QuadTree::buildQuadTree(relativeParticles, tree);
-    
+    double totalSimulationTime3 = t3.elapsed();
+        if (!pid) std::cerr<< "build quadtree: "<< totalSimulationTime3<<std::endl;
+
     newParticles.resize(myParticles.size());
+
+    Timer t4;
     simulateStep(tree, myParticles, newParticles, stepParams);
-    
+    double totalSimulationTime4 = t4.elapsed();
+        if (!pid) std::cerr<< "simulate step: "<< totalSimulationTime4<<std::endl;
+
+     buildquatree += totalSimulationTime3;
+     simulatestep += totalSimulationTime4;
+     constructrelated += totalSimulationTime2;
+     allgather += totalSimulationTime10;
     myParticles.swap(newParticles);
     
   }
@@ -328,6 +355,11 @@ int main(int argc, char *argv[]) {
   MPI_Gatherv(myParticles.data(), myParticles.size() * sizeof(Particle), MPI_BYTE,
             totalParticles.data(), recvCounts, displs, MPI_BYTE,0, MPI_COMM_WORLD);
   double totalSimulationTime = totalSimulationTimer.elapsed();
+
+  if (!pid) std::cerr<< "Construct related in the end!!!: "<< constructrelated<<std::endl;
+  if (!pid) std::cerr<< "All gather in the end!!!: "<< allgather<<std::endl;
+  if (!pid) std::cerr<< "Simulate Step in the end!!!: "<< simulatestep<<std::endl;
+  if (!pid) std::cerr<< "Build Quad Tree in the end!!!: "<< buildquatree<<std::endl;
  
   if (pid == 0) {
     printf("total simulation time: %.6fs\n", totalSimulationTime);
