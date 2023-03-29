@@ -7,7 +7,7 @@
 #include "timing.h"
 #include <algorithm>
 
-int resizeIter = 4; 
+int resizeIter = 100; 
 
 //quadTree is built from relativeParticles 
 //newParticles is particles in the grid ==== myParticles
